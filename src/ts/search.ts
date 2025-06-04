@@ -1,3 +1,4 @@
+import { FSRS5_DEFAULT_DECAY } from "ts-fsrs"
 import { realFetch } from "./root"
 
 export function catchErrors<Return>(func: () => Return): Return {
@@ -52,6 +53,7 @@ export interface CardData {
     mod: number
     usn: number
     type: number
+    // https://github.com/ankitects/anki/blob/main/pylib/anki/consts.py#L22-L29
     queue: number
     due: number
     ivl: number
@@ -70,6 +72,19 @@ export interface CardExtraData {
     dr?: number
     pos?: number
     s?: number
+    decay?: number
+}
+
+export function getExtraDataFromCard(card: CardData): CardExtraData {
+    return JSON.parse(card.data)
+}
+
+export function getCardDecay(card: CardData) {
+    return getDecay(getExtraDataFromCard(card))
+}
+
+export function getDecay(data: CardExtraData) {
+    return data.decay ?? FSRS5_DEFAULT_DECAY
 }
 
 export interface Revlog {
@@ -86,6 +101,10 @@ export interface Revlog {
 
 export async function getCardData(cids: number[]) {
     return (await endpoint("cardData", JSON.stringify(cids))) as CardData[]
+}
+
+export async function saveConfigValue(key: string, value: any) {
+    await endpoint("writeConfig", JSON.stringify({ key, value }))
 }
 
 export async function getRevlogs(cids: number[], day_range: number) {

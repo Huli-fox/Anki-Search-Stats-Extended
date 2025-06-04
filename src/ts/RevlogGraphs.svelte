@@ -15,13 +15,14 @@
     import _, { size } from "lodash"
     import BarScrollable from "./BarScrollable.svelte"
     import type { PieDatum } from "./pie"
-    import { MATURE_COLOUR, YOUNG_COLOUR } from "./graph"
+    import { LEARN_COLOUR, MATURE_COLOUR, RELEARN_COLOUR, YOUNG_COLOUR } from "./graph"
     import Pie from "./Pie.svelte"
     import { barDateLabeler, barHourLabeler, barStringLabeler, type BarChart } from "./bar"
     import {
         calculateRevlogStats,
         day_ms,
         easeBarChart,
+        no_rollover_today,
         today,
         type RevlogBuckets,
     } from "./revlogGraphs"
@@ -61,6 +62,7 @@
         interval_ease,
         day_review_hours,
         day_filtered_review_hours,
+        learn_steps_per_card,
     } = catchErrors(() => calculateRevlogStats(revlogData, cardData)))
 
     $: burden_change = DeltaIfy(burden)
@@ -110,13 +112,19 @@
     }
 
     $: time_machine_intervals = intervals[today + realScroll] ?? []
-    $: time_machine_young = _.sum(time_machine_intervals.slice(0, 21)) || 0
+    $: time_machine_intra_day = time_machine_intervals[0] || 0
+    $: time_machine_learn = time_machine_intervals[-2] || 0
+    $: time_machine_young = _.sum(time_machine_intervals.slice(1, 21)) || 0
     $: time_machine_mature = _.sum(time_machine_intervals.slice(21)) || 0
     $: time_machine_suspended = time_machine_intervals[-1] ?? 0
     $: time_machine_added = Object.entries(addedCards).reduce(
         (p, [i, v]) => p + (+i <= realScroll ? v : 0),
         0
     )
+
+    $: total_intervals = time_machine_mature + time_machine_young + time_machine_intra_day
+    $: intervals_mean =
+        intervals[today + realScroll].reduce((p, c, i) => p + c * i) / total_intervals
 
     let left_bound_at = "Review"
 
@@ -148,6 +156,16 @@
             colour: YOUNG_COLOUR,
         },
         {
+            label: i18n("learning-count"),
+            value: time_machine_learn,
+            colour: LEARN_COLOUR,
+        },
+        {
+            label: i18n("relearning-count"),
+            value: time_machine_intra_day - time_machine_learn,
+            colour: RELEARN_COLOUR,
+        },
+        {
             label: i18n("suspended"),
             value: time_machine_suspended,
             colour: "yellow",
@@ -158,6 +176,7 @@
                 time_machine_added -
                 time_machine_young -
                 time_machine_mature -
+                time_machine_intra_day -
                 time_machine_suspended,
             colour: "#6baed6",
         },
@@ -175,17 +194,11 @@
         columnLabeler: barStringLabeler(i18n_bundle.getMessage("interval-of")?.value!),
     }
 
-    $: console.log({
-        day_review_hours,
-        today: day_review_hours[today + realScroll],
-        hours_time_machine,
-    })
-
     let range = 7
     let filtered = false
 
-    $: hours_begin = today + realScroll - range + 1
-    $: hours_end = today + realScroll + 1
+    $: hours_begin = no_rollover_today + realScroll - range + 1
+    $: hours_end = no_rollover_today + realScroll + 2
     $: day_range = filtered
         ? day_filtered_review_hours.slice(hours_begin, hours_end)
         : day_review_hours.slice(hours_begin, hours_end)
@@ -239,6 +252,14 @@
         columnLabeler: barStringLabeler(i18n_pattern("difficulty-of")),
     }
 
+    $: learn_repetitions = learn_steps_per_card.reduce(
+        (learn_repetitions, count) => {
+            learn_repetitions[count] = (learn_repetitions[count] ?? 0) + 1
+            return learn_repetitions
+        },
+        {} as Record<number, number>
+    )
+
     let include_reintroduced = true
     $: truncated = $searchLimit !== 0
     $: introduced_ease = include_reintroduced ? day_initial_reintroduced_ease : day_initial_ease
@@ -280,7 +301,7 @@
     }
 </script>
 
-<GraphCategory>
+<GraphCategory hidden_title={i18n("time-distribution")} config_name="time">
     <GraphContainer>
         <h1>{i18n("time-distribution")}</h1>
         <IntervalGraph
@@ -323,7 +344,7 @@
         </p>
     </GraphContainer>
 </GraphCategory>
-<GraphCategory>
+<GraphCategory hidden_title={i18n("introduced")} config_name="introduced">
     <GraphContainer>
         <h1>{i18n("introduced")}</h1>
         <BarScrollable
@@ -338,7 +359,7 @@
         </p>
         {#if truncated}
             <Warning>
-                {i18n("introduced-truncated-warning ")}
+                {i18n("introduced-truncated-warning")}
             </Warning>
         {/if}
     </GraphContainer>
@@ -385,28 +406,7 @@
         <p>{i18n("introductory-rating-help")}</p>
     </GraphContainer>
 </GraphCategory>
-<GraphCategory>
-    <GraphContainer>
-        <h1>{i18n("load-trend")}</h1>
-        <LineOrCandlestick
-            data={burden}
-            label={i18n("load")}
-            bind:trend_data={burden_trend}
-            up_colour={CANDLESTICK_RED}
-            down_colour={CANDLESTICK_GREEN}
-        />
-        <p>
-            {i18n("load-trend-help")}
-        </p>
-        <TrendValue
-            trend={burden_trend}
-            n={$binSize}
-            info={{ pattern: i18n_pattern("burden-per-day") }}
-        />
-        {#if truncated}
-            <Warning>{i18n("generic-truncated-warning")}</Warning>
-        {/if}
-    </GraphContainer>
+<GraphCategory hidden_title={i18n("ratings")} config_name="rating">
     <GraphContainer>
         <h1>{i18n("ratings")}</h1>
         <BarScrollable
@@ -429,6 +429,98 @@
         </p>
     </GraphContainer>
     <GraphContainer>
+        <h1>{i18n("interval-ratings")}</h1>
+        <BarScrollable
+            data={easeBarChart(
+                interval_ease,
+                1,
+                normalize_ease,
+                barStringLabeler(i18n_bundle.getMessage("interval-of")?.value!)
+            )}
+            bind:binSize={interval_bin_size}
+            bind:offset={interval_scroll}
+            average={normalize_ease}
+            left_aligned
+            trend={normalize_ease}
+            trend_by={retention_trend}
+            trend_info={{
+                pattern: i18n_pattern("retention-per-day-greater-interval"),
+                percentage: true,
+            }}
+        />
+        <label>
+            <input type="checkbox" bind:checked={normalize_ease} />
+            {i18n("as-ratio")}
+        </label>
+        <p>{i18n("interval-ratings-help")}</p>
+    </GraphContainer>
+    <GraphContainer>
+        <h1>{i18n("time-ratings")}</h1>
+        <BarScrollable
+            data={easeBarChart(
+                time_ease_seconds[mature_filter],
+                0,
+                normalize_ease,
+                barStringLabeler(i18n_bundle.getMessage("x-seconds")?.value!)
+            )}
+            average={normalize_ease}
+            left_aligned
+            trend={normalize_ease}
+            trend_by={retention_trend}
+            trend_info={{ pattern: i18n_pattern("retention-per-second-spent"), percentage: true }}
+        />
+        <label>
+            <input type="checkbox" bind:checked={normalize_ease} />
+            {i18n("as-ratio")}
+        </label>
+
+        <MatureFilterSelector bind:group={mature_filter} />
+        <p>
+            {i18n("time-ratings-help")}
+        </p>
+    </GraphContainer>
+</GraphCategory>
+<GraphCategory hidden_title={i18n("load-trend")} config_name="load">
+    <GraphContainer>
+        <h1>{i18n("load-trend")}</h1>
+        <LineOrCandlestick
+            data={burden}
+            label={i18n("load")}
+            bind:trend_data={burden_trend}
+            up_colour={CANDLESTICK_RED}
+            down_colour={CANDLESTICK_GREEN}
+        />
+        <p>
+            {i18n("load-trend-help")}
+        </p>
+        <TrendValue
+            trend={burden_trend}
+            n={$binSize}
+            info={{ pattern: i18n_pattern("burden-per-day") }}
+        />
+        {#if truncated}
+            <Warning>{i18n("generic-truncated-warning")}</Warning>
+        {/if}
+    </GraphContainer>
+    <GraphContainer>
+        <h1>{i18n("learn-reviews-per-card")}</h1>
+        <IntervalGraph
+            intervals={learn_repetitions}
+            pieInfo={{
+                countDescriptor: i18n("highest-repetition-count"),
+                legend_left: i18n("repetition-count"),
+                legend_right: i18n("card-count"),
+                spectrumFrom: "#5ca7f7",
+                spectrumTo: "#0b4f99",
+            }}
+        />
+        <span>{i18n("mean")} = {d3.mean(learn_steps_per_card)?.toFixed(2)}</span>
+        <span>{i18n("median")} = {d3.quantile(learn_steps_per_card, 0.5)}</span>
+        <p>{i18n("learn-reviews-per-card-help")}</p>
+    </GraphContainer>
+</GraphCategory>
+<GraphCategory hidden_title="FSRS" config_name="fsrs">
+    <GraphContainer>
         <h1>{i18n("memorised")}</h1>
         <MemorisedBar />
         {#if truncated}
@@ -437,6 +529,41 @@
         <p>
             {i18n("memorised-help")}
         </p>
+    </GraphContainer>
+    <GraphContainer>
+        <h1>{i18n("stability-time-machine")}</h1>
+        {#if $memorised_stats}
+            <BarScrollable data={stability_time_machine_bar} left_aligned />
+            <TimeMachineScroll min={time_machine_min} />
+            <p>{i18n("stability-time-machine-help")}</p>
+            {#if truncated}
+                <Warning>{i18n("generic-truncated-warning")}</Warning>
+            {/if}
+        {:else}
+            <MemorisedCalculator />
+        {/if}
+    </GraphContainer>
+    <GraphContainer>
+        <h1>{i18n("difficulty-time-machine")}</h1>
+        {#if $memorised_stats}
+            <label class="scroll">
+                {i18n("zoom")}
+                <input type="range" bind:value={granularity} min={1} max={100} />
+            </label>
+            <Bar data={difficulty_time_machine_bar} />
+            <label class="scroll">
+                <span>
+                    {new Date(Date.now() + $scroll * day_ms).toLocaleDateString()}:
+                </span>
+                <TimeMachineScroll min={time_machine_min} />
+            </label>
+            <p>{i18n("difficulty-time-machine-help")}</p>
+            {#if truncated}
+                <Warning>{i18n("generic-truncated-warning")}</Warning>
+            {/if}
+        {:else}
+            <MemorisedCalculator />
+        {/if}
     </GraphContainer>
     <GraphContainer>
         <h1>{i18n("average-stability-over-time")}</h1>
@@ -481,166 +608,8 @@
             <MemorisedCalculator />
         {/if}
     </GraphContainer>
-    <GraphContainer>
-        <h1>{i18n("leech-detector")}</h1>
-        {#if $memorised_stats}
-            <label>
-                {i18n("zoom")}
-                <input type="range" min={1} max={6} bind:value={granularity_power} />
-            </label>
-            <Bar data={leech_detection_bar}></Bar>
-            <p>
-                {i18n("leech-detector-help")}
-                <a href="https://forums.ankiweb.net/t/automated-leech-detection/56887">
-                    Forum discussion link
-                </a>
-            </p>
-        {:else}
-            <MemorisedCalculator />
-        {/if}
-    </GraphContainer>
 </GraphCategory>
-<GraphCategory>
-    <GraphContainer>
-        <h1>{i18n("interval-ratings")}</h1>
-        <BarScrollable
-            data={easeBarChart(
-                interval_ease,
-                1,
-                normalize_ease,
-                barStringLabeler(i18n_bundle.getMessage("interval-of")?.value!)
-            )}
-            bind:binSize={interval_bin_size}
-            bind:offset={interval_scroll}
-            average={normalize_ease}
-            left_aligned
-            trend={normalize_ease}
-            trend_by={retention_trend}
-            trend_info={{
-                pattern: i18n_pattern("retention-per-day-greater-interval"),
-                percentage: true,
-            }}
-        />
-        <label>
-            <input type="checkbox" bind:checked={normalize_ease} />
-            {i18n("as-ratio")}
-        </label>
-        <p>{i18n("interval-ratings-help")}</p>
-    </GraphContainer>
-    {#if $config?.badGraphs}
-        <GraphContainer>
-            <h1>{i18n("naive-sibling-similarity")}</h1>
-            <BarScrollable
-                data={easeBarChart(
-                    sibling_time_ease,
-                    1,
-                    normalize_ease,
-                    barStringLabeler(i18n_bundle.getMessage("days-since-sibling-review")?.value!)
-                )}
-                bind:binSize={interval_bin_size}
-                bind:offset={interval_scroll}
-                average={normalize_ease}
-                left_aligned
-                trend={normalize_ease}
-                trend_by={retention_trend}
-                trend_info={{
-                    pattern: i18n_pattern("retention-per-day-since-last-sibling-review"),
-                    percentage: true,
-                }}
-            />
-            <label>
-                <input type="checkbox" bind:checked={normalize_ease} />
-                {i18n("as-ratio")}
-            </label>
-            <p>
-                {i18n("naive-sibling-similarity-help")}
-            </p>
-            <small><Warning always>{i18n("bad-graph")}</Warning></small>
-        </GraphContainer>
-        <GraphContainer>
-            <h1>{i18n("rating-fatigue")}</h1>
-            <BarScrollable
-                data={easeBarChart(
-                    fatigue_ease[mature_filter],
-                    0,
-                    normalize_ease,
-                    barStringLabeler(i18n_bundle.getMessage("x-previous-reviews")?.value!)
-                )}
-                average={normalize_ease}
-                bind:binSize={fatigue_bin_size}
-                left_aligned
-                trend={normalize_ease}
-                trend_by={retention_trend}
-                trend_info={{
-                    pattern: i18n_pattern("retention-per-prior-review-that-day"),
-                    percentage: true,
-                }}
-            />
-            <label>
-                <input type="checkbox" bind:checked={normalize_ease} />
-                {i18n("as-ratio")}
-            </label>
-
-            <MatureFilterSelector bind:group={mature_filter} />
-            <p>
-                {i18n("rating-fatigue-help")}
-            </p>
-            <small><Warning always>{i18n("bad-graph")}</Warning></small>
-        </GraphContainer>
-        {#if $memorised_stats}
-            <GraphContainer>
-                <h1>{i18n("fsrs-loss-by-fatigue")}</h1>
-                <BarScrollable
-                    bind:binSize={fatigue_bin_size}
-                    data={{
-                        row_colours: ["red"],
-                        row_labels: ["RMSE"],
-                        data: $memorised_stats.fatigueRMSE[mature_filter].map((v, i) => ({
-                            label: i.toString(),
-                            values: v,
-                        })),
-                    }}
-                    left_aligned
-                    average
-                    loss
-                    trend
-                    trend_info={{ pattern: i18n_pattern("loss-per-prior-review-that-day") }}
-                ></BarScrollable>
-                <MatureFilterSelector bind:group={mature_filter}></MatureFilterSelector>
-                <p>
-                    {i18n("fsrs-loss-by-fatigue-help")}
-                </p>
-                <small><Warning always>{i18n("bad-graph")}</Warning></small>
-            </GraphContainer>
-        {/if}
-    {/if}
-    <GraphContainer>
-        <h1>{i18n("time-ratings")}</h1>
-        <BarScrollable
-            data={easeBarChart(
-                time_ease_seconds[mature_filter],
-                0,
-                normalize_ease,
-                barStringLabeler(i18n_bundle.getMessage("x-seconds")?.value!)
-            )}
-            average={normalize_ease}
-            left_aligned
-            trend={normalize_ease}
-            trend_by={retention_trend}
-            trend_info={{ pattern: i18n_pattern("retention-per-second-spent"), percentage: true }}
-        />
-        <label>
-            <input type="checkbox" bind:checked={normalize_ease} />
-            {i18n("as-ratio")}
-        </label>
-
-        <MatureFilterSelector bind:group={mature_filter} />
-        <p>
-            {i18n("time-ratings-help")}
-        </p>
-    </GraphContainer>
-</GraphCategory>
-<GraphCategory>
+<GraphCategory hidden_title={i18n("card-count-time-machine")} config_name="timeMachine">
     <GraphContainer>
         <h1>{i18n("card-count-time-machine")}</h1>
         <Pie
@@ -688,49 +657,13 @@
         <h1>{i18n("review-interval-time-machine")}</h1>
         <BarScrollable data={time_machine_bar} left_aligned />
         <TimeMachineScroll min={time_machine_min} />
-        <span>{i18n("x-total-cards", { val: time_machine_mature + time_machine_young })}</span>
+        <span>{i18n("x-total-cards", { val: total_intervals })}</span>
         <p>{i18n("review-interval-time-machine-help")}</p>
+        <span>
+            {i18n("mean")} = {intervals_mean.toFixed(2)}
+        </span>
         {#if truncated}
             <Warning>{i18n("generic-truncated-warning")}</Warning>
-        {/if}
-    </GraphContainer>
-    <GraphContainer>
-        <h1>{i18n("stability-time-machine")}</h1>
-        {#if $memorised_stats}
-            <BarScrollable data={stability_time_machine_bar} left_aligned />
-            <TimeMachineScroll min={time_machine_min} />
-            <p>{i18n("stability-time-machine-help")}</p>
-            {#if truncated}
-                <Warning>{i18n("generic-truncated-warning")}</Warning>
-            {/if}
-        {:else}
-            <MemorisedCalculator />
-        {/if}
-    </GraphContainer>
-    <GraphContainer>
-        <h1>{i18n("difficulty-time-machine")}</h1>
-        {#if $memorised_stats}
-            <label class="scroll">
-                {i18n("zoom")}
-                <input type="range" bind:value={granularity} min={1} max={100} />
-            </label>
-            <Bar data={difficulty_time_machine_bar} />
-            <label class="scroll">
-                <span>
-                    {new Date(Date.now() + $scroll * day_ms).toLocaleDateString()}:
-                </span>
-                <span class="scroll">
-                    {time_machine_min}
-                    <input type="range" min={time_machine_min} max={0} bind:value={$scroll} />
-                    0
-                </span>
-            </label>
-            <p>{i18n("difficulty-time-machine-help")}</p>
-            {#if truncated}
-                <Warning>{i18n("generic-truncated-warning")}</Warning>
-            {/if}
-        {:else}
-            <MemorisedCalculator />
         {/if}
     </GraphContainer>
     <GraphContainer>
@@ -756,6 +689,110 @@
         </label>
         <TimeMachineScroll min={time_machine_min} />
         <p>{i18n("daily-hourly-breakdown-help")}</p>
+    </GraphContainer>
+</GraphCategory>
+<GraphCategory hidden_title={i18n("bad-graph")} config_name="bad">
+    <GraphContainer>
+        <h1>{i18n("leech-detector")}</h1>
+        {#if $memorised_stats}
+            <label>
+                {i18n("zoom")}
+                <input type="range" min={1} max={6} bind:value={granularity_power} />
+            </label>
+            <Bar data={leech_detection_bar}></Bar>
+            <p>
+                {i18n("leech-detector-help")}
+                <a href="https://forums.ankiweb.net/t/automated-leech-detection/56887">
+                    Forum discussion link
+                </a>
+            </p>
+        {:else}
+            <MemorisedCalculator />
+        {/if}
+    </GraphContainer>
+    <GraphContainer>
+        <h1>{i18n("naive-sibling-similarity")}</h1>
+        <BarScrollable
+            data={easeBarChart(
+                sibling_time_ease,
+                1,
+                normalize_ease,
+                barStringLabeler(i18n_bundle.getMessage("days-since-sibling-review")?.value!)
+            )}
+            bind:binSize={interval_bin_size}
+            bind:offset={interval_scroll}
+            average={normalize_ease}
+            left_aligned
+            trend={normalize_ease}
+            trend_by={retention_trend}
+            trend_info={{
+                pattern: i18n_pattern("retention-per-day-since-last-sibling-review"),
+                percentage: true,
+            }}
+        />
+        <label>
+            <input type="checkbox" bind:checked={normalize_ease} />
+            {i18n("as-ratio")}
+        </label>
+        <p>
+            {i18n("naive-sibling-similarity-help")}
+        </p>
+    </GraphContainer>
+    <GraphContainer>
+        <h1>{i18n("rating-fatigue")}</h1>
+        <BarScrollable
+            data={easeBarChart(
+                fatigue_ease[mature_filter],
+                0,
+                normalize_ease,
+                barStringLabeler(i18n_bundle.getMessage("x-previous-reviews")?.value!)
+            )}
+            average={normalize_ease}
+            bind:binSize={fatigue_bin_size}
+            left_aligned
+            trend={normalize_ease}
+            trend_by={retention_trend}
+            trend_info={{
+                pattern: i18n_pattern("retention-per-prior-review-that-day"),
+                percentage: true,
+            }}
+        />
+        <label>
+            <input type="checkbox" bind:checked={normalize_ease} />
+            {i18n("as-ratio")}
+        </label>
+
+        <MatureFilterSelector bind:group={mature_filter} />
+        <p>
+            {i18n("rating-fatigue-help")}
+        </p>
+    </GraphContainer>
+    <GraphContainer>
+        <h1>{i18n("fsrs-loss-by-fatigue")}</h1>
+        {#if $memorised_stats}
+            <BarScrollable
+                bind:binSize={fatigue_bin_size}
+                data={{
+                    row_colours: ["red"],
+                    row_labels: ["RMSE"],
+                    data: $memorised_stats.fatigueRMSE[mature_filter].map((v, i) => ({
+                        label: i.toString(),
+                        values: v,
+                    })),
+                }}
+                left_aligned
+                average
+                loss
+                trend
+                trend_info={{ pattern: i18n_pattern("loss-per-prior-review-that-day") }}
+            ></BarScrollable>
+            <MatureFilterSelector bind:group={mature_filter}></MatureFilterSelector>
+        {:else}
+            <MemorisedCalculator />
+        {/if}
+        <p>
+            {i18n("fsrs-loss-by-fatigue-help")}
+        </p>
     </GraphContainer>
 </GraphCategory>
 
